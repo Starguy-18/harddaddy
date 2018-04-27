@@ -195,7 +195,7 @@ void iplc_sim_init(int index, int blocksize, int assoc) {
         bzero(&(pipeline[i]), sizeof(pipeline_t));
     }
 }
-
+/*
 void iplc_sim_close() {
 	int i;
 	// Dealocate all sets in the cache
@@ -205,6 +205,7 @@ void iplc_sim_close() {
 	// Dealocate the cache array
 	free(cache);
 }
+*/
 
 /*  iplc_sim_trap_address() determined this is not in our cache. Put it there
     and make sure that is now our Most Recently Used (MRU) entry. */
@@ -340,11 +341,14 @@ void iplc_sim_dump_pipeline() {
 
 /*  Check if various stages of our pipeline require stalls, forwarding, etc.
     Then push the contents of our various pipeline stages through the pipeline */
-void iplc_sim_push_pipeline_stage() {
+void iplc_sim_push_pipeline_stage()
+{
     int i;
-    int data_hit = 1;
+    int data_hit=1;
+
+    int stall = 0;
     
-    //  1. Count WRITEBACK stage is "retired" -- This I'm giving you
+    /* 1. Count WRITEBACK stage is "retired" -- This I'm giving you */
     if (pipeline[WRITEBACK].instruction_address) {
         instruction_count++;
         if (debug)
@@ -352,31 +356,88 @@ void iplc_sim_push_pipeline_stage() {
                    pipeline[WRITEBACK].instruction_address, pipeline[WRITEBACK].itype, pipeline_cycles);
     }
     
-    //  2. Check for BRANCH and correct/incorrect Branch Prediction
+    /* 2. Check for BRANCH and correct/incorrect Branch Prediction */
     if (pipeline[DECODE].itype == BRANCH) {
         int branch_taken = 0;
+        branch_count++;
+        if(pipeline[FETCH].instruction_address != (pipeline[DECODE].instruction_address + 4) ){
+            branch_taken++;
+        }
+        if(branch_predict_taken){ // if choose predict take branches and next instruction is not at address+4,
+                          // prediction correct.  Else add nop for stall
+            if(branch_taken){
+                correct_branch_predictions++;
+            }
+            else{
+                //memcpy(&pipeline[WRITEBACK], &pipeline[MEM], sizeof(pipeline_t));
+                //memcpy(&pipeline[MEM], &pipeline[ALU], sizeof(pipeline_t));
+                //memcpy(&pipeline[ALU], &pipeline[DECODE], sizeof(pipeline_t));
+                //memcpy(&pipeline[DECODE], &pipeline[FETCH], sizeof(pipeline_t));
+                //bzero(&(pipeline[FETCH]), sizeof(pipeline_t));
+                stall = 1; // if incorrect remove this variable and just increment cycles
+            }
+        }
+        else{
+            if(!branch_taken){
+                correct_branch_predictions++;
+            }
+            else{
+                //memcpy(&pipeline[WRITEBACK], &pipeline[MEM], sizeof(pipeline_t));
+                //memcpy(&pipeline[MEM], &pipeline[ALU], sizeof(pipeline_t));
+                //memcpy(&pipeline[ALU], &pipeline[DECODE], sizeof(pipeline_t));
+                //memcpy(&pipeline[DECODE], &pipeline[FETCH], sizeof(pipeline_t));
+                //bzero(&(pipeline[FETCH]), sizeof(pipeline_t));
+                stall = 1;
+            }
+        }
     }
     
-    /*  3. Check for LW delays due to use in ALU stage and if data hit/miss
-        add delay cycles if needed. */
+    /* 3. Check for LW delays due to use in ALU stage and if data hit/miss
+     *    add delay cycles if needed.
+     */
     if (pipeline[MEM].itype == LW) {
         int inserted_nop = 0;
+        if(pipeline[ALU].itype == RTYPE){
+            if(pipeline[ALU].stage.rtype.reg1 == pipeline[MEM].stage.lw.dest_reg
+                || pipeline[ALU].stage.rtype.reg2_or_constant == pipeline[MEM].stage.lw.dest_reg){
+                stall++;
+            }
+        }
     }
     
-    /*  4. Check for SW mem acess and data miss .. add delay cycles if needed */
+    /* 4. Check for SW mem acess and data miss .. add delay cycles if needed */
     if (pipeline[MEM].itype == SW) {
+        if(pipeline[ALU].itype == RTYPE){
+            if(pipeline[ALU].stage.rtype.dest_reg == pipeline[MEM].stage.sw.base_reg){
+                stall++;
+            }
+        }
     }
     
-    //  5. Increment pipe_cycles 1 cycle for normal processing
-    //  6. push stages thru MEM->WB, ALU->MEM, DECODE->ALU, FETCH->ALU
+    /* 5. Increment pipe_cycles 1 cycle for normal processing */
+    pipeline_cycles++;
+    /* 6. push stages thru MEM->WB, ALU->MEM, DECODE->ALU, FETCH->ALU */ // FETCH->DECODE
+    memcpy(&pipeline[WRITEBACK], &pipeline[MEM], sizeof(pipeline_t));
+    memcpy(&pipeline[MEM], &pipeline[ALU], sizeof(pipeline_t));
+    memcpy(&pipeline[ALU], &pipeline[DECODE], sizeof(pipeline_t));
+    memcpy(&pipeline[DECODE], &pipeline[FETCH], sizeof(pipeline_t));
+
+
     
-    //  7. This is a give'me -- Reset the FETCH stage to NOP via bezero
+    // 7. This is a give'me -- Reset the FETCH stage to NOP via bezero */
     bzero(&(pipeline[FETCH]), sizeof(pipeline_t));
+
+    if(stall){
+        iplc_sim_push_pipeline_stage();
+    }
 }
 
-/*  This function is fully implemented.  You should use this as a reference
-    for implementing the remaining instruction types */
-void iplc_sim_process_pipeline_rtype(char *instruction, int dest_reg, int reg1, int reg2_or_constant) {
+/*
+ * This function is fully implemented.  You should use this as a reference
+ * for implementing the remaining instruction types.
+ */
+void iplc_sim_process_pipeline_rtype(char *instruction, int dest_reg, int reg1, int reg2_or_constant)
+{
     /* This is an example of what you need to do for the rest */
     iplc_sim_push_pipeline_stage();
     
@@ -391,38 +452,81 @@ void iplc_sim_process_pipeline_rtype(char *instruction, int dest_reg, int reg1, 
     inst_stats.rtype++;
 }
 
-void iplc_sim_process_pipeline_lw(int dest_reg, int base_reg, unsigned int data_address) {
+void iplc_sim_process_pipeline_lw(int dest_reg, int base_reg, unsigned int data_address)
+{
     /* You must implement this function */
+    iplc_sim_push_pipeline_stage();
+
+    pipeline[FETCH].itype = LW;
+    pipeline[FETCH].instruction_address = instruction_address;
+
+    pipeline[FETCH].stage.lw.data_address = data_address;
+    pipeline[FETCH].stage.lw.dest_reg = dest_reg;
+    pipeline[FETCH].stage.lw.base_reg = base_reg;
 
     inst_stats.lw++;
 }
 
-void iplc_sim_process_pipeline_sw(int src_reg, int base_reg, unsigned int data_address) {
+void iplc_sim_process_pipeline_sw(int src_reg, int base_reg, unsigned int data_address)
+{
     /* You must implement this function */
+    iplc_sim_push_pipeline_stage();
+
+    pipeline[FETCH].itype = SW;
+    pipeline[FETCH].instruction_address = instruction_address;
+
+    pipeline[FETCH].stage.sw.data_address = data_address;
+    pipeline[FETCH].stage.sw.src_reg = src_reg;
+    pipeline[FETCH].stage.sw.base_reg = base_reg;
 
     inst_stats.sw++;
 }
 
-void iplc_sim_process_pipeline_branch(int reg1, int reg2) {
+void iplc_sim_process_pipeline_branch(int reg1, int reg2)
+{
     /* You must implement this function */
+    iplc_sim_push_pipeline_stage();
+
+    pipeline[FETCH].itype = BRANCH;
+    pipeline[FETCH].instruction_address = instruction_address;
+
+    pipeline[FETCH].stage.branch.reg1 = reg1;
+    pipeline[FETCH].stage.branch.reg2 = reg2;
 
     inst_stats.branch++;
 }
 
-void iplc_sim_process_pipeline_jump(char *instruction) {
+void iplc_sim_process_pipeline_jump(char *instruction)
+{
     /* You must implement this function */
+    iplc_sim_push_pipeline_stage();
+
+    pipeline[FETCH].itype = JUMP;
+    pipeline[FETCH].instruction_address = instruction_address;
+
+    strcpy(pipeline[FETCH].stage.jump.instruction, instruction);
 
     inst_stats.jump++;
 }
 
-void iplc_sim_process_pipeline_syscall() {
+void iplc_sim_process_pipeline_syscall()
+{
     /* You must implement this function */
+    iplc_sim_push_pipeline_stage();
+
+    pipeline[FETCH].itype = SYSCALL;
+    pipeline[FETCH].instruction_address = instruction_address;
 
     inst_stats.syscall++;
 }
 
-void iplc_sim_process_pipeline_nop() {
+void iplc_sim_process_pipeline_nop()
+{
     /* You must implement this function */
+    iplc_sim_push_pipeline_stage();
+
+    pipeline[FETCH].itype = NOP;
+    pipeline[FETCH].instruction_address = instruction_address;
 
     inst_stats.nop++;
 }
@@ -687,14 +791,16 @@ void pretty_print_table(char* title, char menu_sep, pa_run_t* results, int m,
 }
 
 /* runs the performance analysis testing and prints the results */
-void run_pa(FILE* trace_file, pa_run_t* pa_sims, int p1, int p2) {
+void run_pa(char* tracefile, pa_run_t* pa_sims, int p1, int p2) {
     // p1 and p2 are the precisions of the cpi and cache miss raterespectively
+
+    
 
     char buffer[80];
 
-    int index_inputs    [18] = {7,6,6,6,5,5,5,4,4,  7,6,6,6,5,5,5,4,4};
-    int blocksize_inputs[18] = {1,1,2,4,1,2,4,2,4,  1,1,2,4,1,2,4,2,4};
-    int assoclvl_inputs [18] = {1,2,1,1,4,2,2,4,4,  1,2,1,1,4,2,2,4,4};
+    int index_inputs    [18] = {7,6,6,6,5,5,5,4,4,  7,6,6,6,5,5,5,4,2};
+    int blocksize_inputs[18] = {1,1,2,4,1,2,4,2,4,  1,1,2,4,1,2,4,2,2};
+    int assoclvl_inputs [18] = {1,2,1,1,4,2,2,4,4,  1,2,1,1,4,2,2,4,2};
     int brnchpred_inputs[18] = {0,0,0,0,0,0,0,0,0,  1,1,1,1,1,1,1,1,1};
 
     double cpi_outputs[18];
@@ -703,6 +809,8 @@ void run_pa(FILE* trace_file, pa_run_t* pa_sims, int p1, int p2) {
     int m = 0;
 
     for (int i = 0; i < 18; i++) {
+
+    	FILE* trace_file = fopen(tracefile, "r");
 
         pa_sims[i].index            = index_inputs[i];
         pa_sims[i].blocksize        = blocksize_inputs[i];
@@ -716,15 +824,15 @@ void run_pa(FILE* trace_file, pa_run_t* pa_sims, int p1, int p2) {
 
             iplc_sim_parse_instruction(buffer);
             if(dump_pipeline) {
-                iplc_sim_dump_pipeline();
+                //iplc_sim_dump_pipeline();
             }
 
         }
 
         iplc_sim_finalize();
 
-        cpi_outputs[i] = (instruction_count == 0)   ? 0 : (pipeline_cycles / instruction_count);
-        cmr_outputs[i] = (cache_access == 0)        ? 0 : (cache_miss / cache_access);
+        cpi_outputs[i] = (instruction_count == 0)   ? 0 : ((double) pipeline_cycles / (double) instruction_count);
+        cmr_outputs[i] = (cache_access == 0)        ? 0 : ((double) cache_miss / (double) cache_access);
 
         if (pa_sims[i].cpi + pa_sims[i].cmr < pa_sims[m].cpi + pa_sims[m].cmr) {
             m = i;
@@ -732,6 +840,15 @@ void run_pa(FILE* trace_file, pa_run_t* pa_sims, int p1, int p2) {
 
         pa_sims[i].cpi = cpi_outputs[i];
         pa_sims[i].cmr = cmr_outputs[i];
+
+        instruction_count 			= 0;
+        pipeline_cycles 			= 0;
+        cache_access 				= 0;
+        cache_miss 					= 0;
+        correct_branch_predictions 	= 0;
+        branch_count 				= 0;
+
+        //fclose(trace_file);
 
     }
 
@@ -748,6 +865,16 @@ void calc_inst_stats() {
     int w1 = 15;
     int w2 = 10;
     int w3 = 12;
+
+    inst_stats.rtype /= 18;
+    inst_stats.sw /= 18;
+    inst_stats.lw /= 18;
+    inst_stats.branch /= 18;
+    inst_stats.jump /= 18;
+    inst_stats.syscall /= 18;
+    inst_stats.nop /= 18;
+
+
     int total_count = inst_stats.rtype + inst_stats.sw + 
                     inst_stats.lw + inst_stats.branch + 
                     inst_stats.jump + inst_stats.syscall + inst_stats.nop;
@@ -838,7 +965,7 @@ int main(int argc, char* argv[]) {
 
                 pa_run_t pa_sims[18];
 
-                run_pa(trace_file, pa_sims, 6, 6);
+                run_pa(argv[2], pa_sims, 6, 6);
 
                 calc_inst_stats();
             } else {
